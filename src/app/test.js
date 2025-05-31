@@ -1,17 +1,16 @@
 import React from 'react';
 import { ScrollView, StyleSheet, Text } from 'react-native';
-import { useVoice } from '../context/VoiceContext';
+
 
 export default function Test() {
-  const { transcript, recognizing } = useVoice();
+
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.header}>
-        {recognizing ? '🎤 Listening…' : '⏸️  Not listening'}
+    Say Home to return home
       </Text>
 
-      <Text style={styles.transcript}>{transcript || 'Say something!'}</Text>
     </ScrollView>
   );
 }
