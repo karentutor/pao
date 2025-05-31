@@ -1,13 +1,9 @@
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
 import { View, Button, ScrollView, Text, StyleSheet } from 'react-native';
-import { useRouter } from 'expo-router';
 import { useSpeech } from '../context/SpeechProvider';
 
 /* ────────────────────────────────────────────────────────────── */
 export default function HomeScreen() {
-  const router = useRouter();
-  const heardTestRef = useRef(false);
-
   /* speech-provider values */
   const {
     recognizing,
@@ -15,15 +11,6 @@ export default function HomeScreen() {
     startRecognition,
     stopRecognition,
   } = useSpeech();
-
-  /* navigate the first time we hear “test” */
-  useEffect(() => {
-    if (!heardTestRef.current && /\btest\b/i.test(transcript)) {
-      heardTestRef.current = true;
-      stopRecognition();
-      router.push('/test');
-    }
-  }, [transcript, stopRecognition, router]);
 
   /* ---------- UI ---------- */
   return (
@@ -35,7 +22,7 @@ export default function HomeScreen() {
 
       <ScrollView style={styles.scroll}>
         <Text style={styles.text}>
-          {transcript || 'Say something… (say “test” to navigate)'}
+          {transcript || 'Say something… (e.g. “home”, “test”, “text”)'}
         </Text>
       </ScrollView>
     </View>
@@ -48,4 +35,3 @@ const styles = StyleSheet.create({
   scroll:    { marginTop: 24, backgroundColor: '#f4f4f4', borderRadius: 8 },
   text:      { padding: 12, fontSize: 16, lineHeight: 22 },
 });
-
