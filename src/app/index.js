@@ -1,31 +1,24 @@
 import React from 'react';
 import { View, Button, ScrollView, Text } from 'react-native';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { useVoice } from '../context/VoiceContext';
+import { useRouter } from 'expo-router';
+
 
 export default function Index() {
   const router = useRouter();
   const { recognizing, transcript, start, stop } = useVoice();
 
-  /* Automatically start on focus; stop on blur */
-  useFocusEffect(
-    React.useCallback(() => {
-      start();          // clears transcript & begins listening
-      return () => stop();
-    }, [start, stop])
-  );
-
   return (
     <View style={{ flex: 1, padding: 24 }}>
-      <Button
-        title={recognizing ? 'Stop Listening' : 'Start Listening'}
-        onPress={recognizing ? stop : start}
-      />
+      <Button title={recognizing ? 'Stop' : 'Start'} onPress={recognizing ? stop : start} />
+       <View style={{ marginTop: 16 }}>
+        <Button
+          title="Calendar"
+          onPress={() => router.push('/calendar')}
+        />
+      </View>
 
-      <Button title="Go to calendar" onPress={() => router.push('/calendar')} />
-
-      <ScrollView style={{ marginTop: 20 }}>
+      <ScrollView>
         <Text>{transcript}</Text>
       </ScrollView>
     </View>
