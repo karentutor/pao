@@ -1,62 +1,101 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useRef,
+  useCallback,
+} from 'react';
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
 
-/**
- * Context shape:
- * {
- *   recognizing: boolean,
- *   transcript:  string,
- *   start: () => Promise<void>,
- *   stop:  () => void
- * }
- */
 const VoiceContext = createContext(null);
 
 export function VoiceProvider({ children }) {
+  /* ─── State & refs ──────────────────────────────────────────────── */
   const [recognizing, setRecognizing] = useState(false);
-  const [transcript, setTranscript] = useState('');
+  const [transcript,  setTranscript]  = useState('');
+  const listeningRef                 = useRef(false);  // true while mic active
 
-  // ─── Event listeners ──────────────────────────────────────────────────────────
+  /* ─── Low-level starter — keeps settings in one place ───────────── */
+  const _startRecognizer = async () => {
+    await ExpoSpeechRecognitionModule.start({
+      lang: 'en-US',
+      interimResults: true,
+      continuous: true,          // keep mic open
+    });
+  };
+
+  /* ─── Native events ─────────────────────────────────────────────── */
   useSpeechRecognitionEvent('start', () => setRecognizing(true));
-  useSpeechRecognitionEvent('end',   () => setRecognizing(false));
 
-  useSpeechRecognitionEvent('result', e =>
-    setTranscript(e.results[0]?.transcript ?? '')
-  );
+  // Some devices fire "end" even in continuous mode → auto-restart
+  useSpeechRecognitionEvent('end', async () => {
+    if (listeningRef.current) {
+      try { await _startRecognizer(); }
+      catch { listeningRef.current = false; setRecognizing(false); }
+    }
+  });
 
-  useSpeechRecognitionEvent('error', e =>
+  /*  The expo-speech-recognition "result" object can look like either:
+      • event.value → ["hello world"]
+      • event.results → [{ transcript: "hello world", … }, …]
+      We normalise both cases and always APPEND within one screen.  */
+  useSpeechRecognitionEvent('result', (e) => {
+    const latest =
+      (Array.isArray(e.value) && e.value[0]) ||
+      (Array.isArray(e.results) && e.results.slice(-1)[0]?.transcript) ||
+      '';
+    if (latest) {
+      setTranscript(prev => (prev ? `${prev} ${latest}` : latest));
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (e) =>
     console.warn('speech-error:', e.error, e.message)
   );
 
-  // ─── Public API ───────────────────────────────────────────────────────────────
+  /* ─── Public API for screens ────────────────────────────────────── */
   const start = useCallback(async () => {
+    if (listeningRef.current) return;          // already running
+    setTranscript('');                         // reset buffer on focus
+    setRecognizing(true);
+    listeningRef.current = true;
+
     const { granted } =
       await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!granted) {
+      listeningRef.current = false;
+      setRecognizing(false);
       console.warn('Microphone permission not granted');
       return;
     }
-    ExpoSpeechRecognitionModule.start({
-      lang: 'en-US',
-      interimResults: true,
-      continuous: false,
-    });
+    try { await _startRecognizer(); }
+    catch (err) {
+      listeningRef.current = false;
+      setRecognizing(false);
+      console.warn('Could not start recogniser:', err);
+    }
   }, []);
 
-  const stop = useCallback(() => ExpoSpeechRecognitionModule.stop(), []);
+  const stop = useCallback(async () => {
+    if (!listeningRef.current) return;
+    listeningRef.current = false;
+    setRecognizing(false);
+    try { await ExpoSpeechRecognitionModule.stop(); } catch {}
+  }, []);
 
-  const value = { recognizing, transcript, start, stop };
-
-  return <VoiceContext.Provider value={value}>{children}</VoiceContext.Provider>;
+  return (
+    <VoiceContext.Provider value={{ recognizing, transcript, start, stop }}>
+      {children}
+    </VoiceContext.Provider>
+  );
 }
 
+/* Hook for consumers */
 export const useVoice = () => {
   const ctx = useContext(VoiceContext);
-  if (!ctx) {
-    throw new Error('useVoice must be used inside <VoiceProvider>');
-  }
+  if (!ctx) throw new Error('useVoice must be used inside <VoiceProvider>');
   return ctx;
 };
