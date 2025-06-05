@@ -28,15 +28,15 @@
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
-        "android.permission.RECORD_AUDIO"
-      ]
+        "RECORD_AUDIO"
+      ],
+      "package": "com.karentutor1.pao"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router",
-      "expo-speech-recognition"
+      "expo-router"
     ],
     "extra": {
       "router": {},
@@ -46,3 +46,4 @@
     }
   }
 }
+

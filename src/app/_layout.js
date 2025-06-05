@@ -1,11 +1,8 @@
-import React from 'react';
-import { Slot } from 'expo-router';
-import { VoiceProvider } from '../context/VoiceContext';
+// src/app/_layout.js   (or app/_layout.tsx if you prefer TS)
+import { Stack } from 'expo-router';
 
 export default function RootLayout() {
   return (
-    <VoiceProvider>
-      <Slot />
-    </VoiceProvider>
+      <Stack screenOptions={{ headerShown: false }} />
   );
 }
