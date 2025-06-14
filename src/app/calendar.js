@@ -1,7 +1,7 @@
 /* ──────────────────────────────────────────────────────────
    calendar.js – voice navigation + events + tasks
    ────────────────────────────────────────────────────────── */
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -19,10 +19,63 @@ import { parse as chronoParse } from "chrono-node";
 
 import DayCalendar   from "../components/DayCalendar";
 import WeekCalendar  from "../components/WeekCalendar";
+import MonthCalendar from "../components/MonthCalendar";
 import YearCalendar  from "../components/YearCalendar";
 import AddEvent      from "../components/AddEvent";
 import AddTask       from "../components/AddTask";
 import TaskList      from "../components/TaskList";
+
+/* ────────────────── header & listening line ────────────────── */
+const CalendarHeader = ({ viewMode, onChangeView, monthLabel }) => {
+  const modes = [
+    ["day",   "Day"],
+    ["week",  "Week"],
+    ["month", "Month"],
+    ["year",  "Year"],
+  ];
+
+  const Btn = ({ mode, label }) => (
+    <TouchableOpacity
+      key={mode}
+      onPress={() => onChangeView(mode)}
+      style={{
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        backgroundColor: viewMode === mode ? "#007AFF" : "#E5E5EA",
+        marginRight: 6,
+      }}
+    >
+      <Text style={{ color: viewMode === mode ? "#fff" : "#000" }}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 4,
+      }}
+    >
+      <View style={{ flexDirection: "row" }}>
+        {modes.map(([mode, label]) => <Btn mode={mode} label={label} key={mode} />)}
+      </View>
+      <Text style={{ fontSize: 18, fontWeight: "600" }}>{monthLabel}</Text>
+    </View>
+  );
+};
+
+const ListeningLine = ({ listening }) => (
+  <Text style={{ marginBottom: 8, fontSize: 16 }}>
+    {listening ? "🔊 Listening…" : "🤫 Mic off"}
+  </Text>
+);
+
+/* ────────────────────────────────────────── */
 
 const EVENTS_PATH = FileSystem.documentDirectory + "calendar/events.json";
 const TASKS_PATH  = FileSystem.documentDirectory + "calendar/tasks.json";
@@ -40,30 +93,35 @@ export default function Calendar() {
   const isFocused = useIsFocused();
 
   /* UI state */
-  const [viewMode, setViewMode]         = useState("day");
+  const [viewMode, setViewMode]         = useState("day");   // day | week | month | year | add | addTask
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [events, setEvents]             = useState([]);
   const [tasks,  setTasks]              = useState([]);
   const [recognizing, setRecognizing]   = useState(false);
 
   /* refs */
-  const aliveRef            = useRef(true);
-  const runningRef          = useRef(false);
-  const lastErrorRef        = useRef(null);
-  const lastSwitchRef       = useRef(0);
-  const hasNavigatedHomeRef = useRef(false);
+  const aliveRef      = useRef(true);
+  const runningRef    = useRef(false);
+  const lastErrorRef  = useRef(null);
+  const lastSwitchRef = useRef(0);
 
-  /* ─── load / save ─── */
+  /* month label (e.g. "June 2025") */
+  const monthLabel = useMemo(
+    () => selectedDate.toLocaleString("en-US", { month: "long", year: "numeric" }),
+    [selectedDate]
+  );
+
+  /* ─── load / save events & tasks ─── */
   useEffect(() => {
     (async () => {
       try {
         await ensureDir();
-        const einfo = await FileSystem.getInfoAsync(EVENTS_PATH);
-        if (einfo.exists) {
+        const eInfo = await FileSystem.getInfoAsync(EVENTS_PATH);
+        if (eInfo.exists) {
           setEvents(JSON.parse(await FileSystem.readAsStringAsync(EVENTS_PATH)));
         }
-        const tinfo = await FileSystem.getInfoAsync(TASKS_PATH);
-        if (tinfo.exists) {
+        const tInfo = await FileSystem.getInfoAsync(TASKS_PATH);
+        if (tInfo.exists) {
           setTasks(JSON.parse(await FileSystem.readAsStringAsync(TASKS_PATH)));
         }
       } catch (err) {
@@ -87,7 +145,7 @@ export default function Calendar() {
   /* stop recogniser safely */
   const haltRecognizer = () => { try { ExpoSpeechRecognitionModule.stop(); } catch {} };
 
-  /* ───────────────── speech callbacks ───────────────── */
+  /* ───────────────── speech callbacks (unchanged) ───────────────── */
 
   useSpeechRecognitionEvent("start", () => {
     if (!isFocused || runningRef.current) return;
@@ -110,18 +168,17 @@ export default function Calendar() {
 
   useSpeechRecognitionEvent("result", (evt) => {
     if (!isFocused || !runningRef.current) return;
-
     const text = evt.results?.[0]?.transcript ?? evt.value ?? "";
     const tokens = text.toLowerCase().trim().split(/\s+/);
 
-    /* date navigation keywords ------------------------------------------------ */
-    if (!["add","addTask"].includes(viewMode)) {
+    /* relative date keywords -------------------------------------------------- */
+    if (!["add", "addTask"].includes(viewMode)) {
       if (tokens.includes("today"))      setSelectedDate(new Date());
       if (tokens.includes("tomorrow"))   setSelectedDate(datePlusDays(1));
       if (tokens.includes("yesterday"))  setSelectedDate(datePlusDays(-1));
     }
 
-    /* switch views / wizards -------------------------------------------------- */
+    /* wizards ----------------------------------------------------------------- */
     if (tokens.includes("add") && (tokens.includes("event") || tokens.includes("desk"))) {
       if (viewMode !== "add") { haltRecognizer(); setViewMode("add"); }
       return;
@@ -131,12 +188,14 @@ export default function Calendar() {
       return;
     }
 
-    if (!["add","addTask"].includes(viewMode)) {
+    /* view switching ---------------------------------------------------------- */
+    if (!["add", "addTask"].includes(viewMode)) {
       const last = tokens.at(-1);
-      const target = ["day","week","year"].includes(last) ? last : null;
+      /* include "month" in voice commands */
+      const target = ["day", "week", "month", "year"].includes(last) ? last : null;
       const now = Date.now();
-      if (target && target!==viewMode && now-lastSwitchRef.current>1000) {
-        setViewMode(target); lastSwitchRef.current=now;
+      if (target && target !== viewMode && now - lastSwitchRef.current > 1000) {
+        setViewMode(target); lastSwitchRef.current = now;
       }
     }
   });
@@ -149,7 +208,7 @@ export default function Calendar() {
     (async () => {
       const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert("Permission required", "Enable microphone access");
+        Alert.alert("Permission required", "Enable microphone access in Settings.");
         return;
       }
       ExpoSpeechRecognitionModule.start({ lang:"en-US", interimResults:true, continuous:true });
@@ -159,11 +218,10 @@ export default function Calendar() {
 
   /* ---------------- helpers ---------------- */
   const datePlusDays = (n) => {
-    const d = new Date(selectedDate);
-    d.setDate(d.getDate()+n); return d;
+    const d = new Date(selectedDate); d.setDate(d.getDate()+n); return d;
   };
 
-  const handleSaveEvent = useCallback((detail) => {
+  const handleSaveEvent = useCallback(detail => {
     const dateObj =
       chronoParse(`${detail.date} ${detail.time}`, new Date(), { forwardDate:true })[0]?.date?.()
       ?? chronoParse(detail.date, new Date(), { forwardDate:true })[0]?.date?.()
@@ -177,37 +235,53 @@ export default function Calendar() {
     setSelectedDate(dateObj); setViewMode("week");
   }, []);
 
-  const handleSaveTask = useCallback((detail)=>{
+  const handleSaveTask = useCallback(detail => {
     const due = chronoParse(detail.dueDate,new Date(),{forwardDate:true})[0]?.date?.() ?? new Date();
-    setTasks(prev=>[...prev,{ id:Date.now(), title:detail.title||"Untitled",
-      description:detail.description, dueDate:due, completed:false }]);
+    setTasks(prev=>[...prev,{
+      id:Date.now(), title:detail.title||"Untitled",
+      description:detail.description, dueDate:due, completed:false,
+    }]);
     setViewMode("week");
-  },[]);
+  }, []);
 
-  const toggleTask = useCallback(id=>{
-    setTasks(prev=>prev.map(t=>t.id===id?{...t,completed:!t.completed}:t));
-  },[]);
+  const toggleTask  = id => setTasks(prev=>prev.map(t=>t.id===id?{...t,completed:!t.completed}:t));
+  const deleteTask  = id => setTasks(prev=>prev.filter(t=>t.id!==id));
+  const openEvent   = id => router.push(`/event/${id}`);
 
-  const deleteTask = useCallback(id=>{
-    setTasks(prev=>prev.filter(t=>t.id!==id));
-  },[]);
+  /* ---------- render wizards with CANCEL prop ---------- */
+  if (viewMode === "add") {
+    return (
+      <AddEvent
+        onSave={handleSaveEvent}
+        onCancel={() => { haltRecognizer(); setViewMode("week"); }}
+      />
+    );
+  }
+  if (viewMode === "addTask") {
+    return (
+      <AddTask
+        onSave={handleSaveTask}
+        onCancel={() => { haltRecognizer(); setViewMode("week"); }}
+      />
+    );
+  }
 
-  const openEvent = id => router.push(`/event/${id}`);
-
-  /* render wizards */
-  if (viewMode==="add")      return <AddEvent onSave={handleSaveEvent}/>;
-  if (viewMode==="addTask")  return <AddTask onSave={handleSaveTask}/>;
-
-  /* ---------------- UI ---------------- */
+  /* ---------- main UI ---------- */
   return (
     <View style={{ flex:1, padding:16 }}>
-      <Text style={{ fontSize:16, marginBottom:4 }}>
-        {recognizing ? "🔊 Listening…" : "🤫 Mic off"}
-      </Text>
+      {/* header: view buttons + month */}
+      <CalendarHeader
+        viewMode={viewMode}
+        onChangeView={(m) => setViewMode(m)}
+        monthLabel={monthLabel}
+      />
+
+      {/* listening indicator just below header */}
+      <ListeningLine listening={recognizing} />
 
       {/* calendars */}
       <View style={{ flex:1 }}>
-        {viewMode==="day" && (
+        {viewMode === "day" && (
           <DayCalendar
             date={selectedDate}
             events={events}
@@ -215,21 +289,33 @@ export default function Calendar() {
             onPressEvent={openEvent}
           />
         )}
-        {viewMode==="week" && (
+        {viewMode === "week" && (
           <WeekCalendar
             date={selectedDate}
             events={events}
             onChangeDate={setSelectedDate}
-            onSelectDate={d=>{ setSelectedDate(d); setViewMode("day"); }}
+            onSelectDate={(d) => { setSelectedDate(d); setViewMode("day"); }}
             onPressEvent={openEvent}
           />
         )}
-        {viewMode==="year" && (
-          <YearCalendar date={selectedDate} onChangeDate={setSelectedDate}/>
+        {viewMode === "month" && (
+          <MonthCalendar
+            date={selectedDate}
+            events={events}
+            onChangeDate={(d) => setSelectedDate(d)}
+            onSelectDate={(d) => { setSelectedDate(d); setViewMode("day"); }}
+            onPressEvent={openEvent}
+          />
+        )}
+        {viewMode === "year" && (
+          <YearCalendar
+            date={selectedDate}
+            onChangeDate={setSelectedDate}
+          />
         )}
       </View>
 
-      {/* tasks */}
+      {/* task list */}
       <Text style={{ marginTop:12, fontSize:16, fontWeight:"600" }}>Tasks</Text>
       <TaskList
         date={selectedDate}
@@ -241,14 +327,14 @@ export default function Calendar() {
       {/* action buttons */}
       <View style={{ flexDirection:"row", marginTop:10 }}>
         <TouchableOpacity
-          onPress={()=>setViewMode("addTask")}
+          onPress={() => setViewMode("addTask")}
           style={{ padding:12, backgroundColor:"#34c759", borderRadius:8, marginRight:8 }}
         >
           <Text style={{ color:"#fff", fontWeight:"600" }}>＋ Add Task</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          onPress={()=>setViewMode("add")}
+          onPress={() => setViewMode("add")}
           style={{ padding:12, backgroundColor:"#007AFF", borderRadius:8 }}
         >
           <Text style={{ color:"#fff", fontWeight:"600" }}>＋ Add Event</Text>

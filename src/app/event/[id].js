@@ -237,6 +237,15 @@ export default function EventDetails() {
     setStep(0);
   }
 
+
+  /* ---------- cancel edit ---------- */
+  const cancelEdit = async () => {
+    gate.current = false;
+    setEditing(false);
+    stopRecog();
+  };
+
+
   /* ---------- save / update ---------- */
   async function commitChanges() {
     gate.current = false;
@@ -293,6 +302,24 @@ export default function EventDetails() {
           ),
         }}
       />
+
+      {/* Cancel button – only when editing */}
+      {editing && (
+        <TouchableOpacity
+          onPress={cancelEdit}
+          style={{
+            position: "absolute",
+            top: 16,
+            right: 16,
+            backgroundColor: "#ff3b30",
+            paddingHorizontal: 12,
+            paddingVertical: 6,
+            borderRadius: 6,
+          }}
+        >
+          <Text style={{ color: "#fff" }}>Cancel</Text>
+        </TouchableOpacity>
+      )}
 
       <Text style={{ fontSize: 24, marginBottom: 12 }}>{event.title}</Text>
       <Text>Date: {new Date(event.date).toLocaleDateString()}</Text>

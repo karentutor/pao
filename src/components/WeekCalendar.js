@@ -1,18 +1,16 @@
-import { View, PanResponder } from "react-native";
+// WeekCalendar.js
+import React from "react";
+import { View } from "react-native";
 import { Calendar as BigCalendar } from "react-native-big-calendar";
 
-/*
-
-* @param {{
- *   date:   Date,
- *   events: any[],
-/** called when user swipes to a different week */  
-/*   onChangeDate?:(d:Date)=>void,
- *   /** tap a day header -> go to Day view */  
-/*   onSelectDate?:(d:Date)=>void,
- *   onPressEvent?:(id:number)=>void
+/**
+ * @param {{
+ *   date:          Date,
+ *   events:        any[],
+ *   onChangeDate?: (d: Date) => void,
+ *   onSelectDate?: (d: Date) => void,
+ *   onPressEvent?: (id: number) => void,
  * }} props
-
  */
 export default function WeekCalendar({
   date,
@@ -21,36 +19,43 @@ export default function WeekCalendar({
   onSelectDate,
   onPressEvent,
 }) {
-  /* map data → BigCalendar shape */
+  /* map your events → BigCalendar’s shape */
   const mapped = events.map((ev) => ({
     title: ev.title,
     start: new Date(ev.date),
-    end:   new Date(new Date(ev.date).getTime() + (ev.durationMinutes ?? 60) * 60000),
-    id:    ev.id,
+    end:   new Date(
+      new Date(ev.date).getTime() + (ev.durationMinutes ?? 60) * 60000
+    ),
+    id: ev.id,
   }));
 
-  /* ---------- swipe handler ---------- */
-  const panResponder = PanResponder.create({
-    onMoveShouldSetPanResponder: (_, g) =>
-      Math.abs(g.dx) > 20 && Math.abs(g.dy) < 20,          // horizontal only
-    onPanResponderRelease: (_, g) => {
-      if (!onChangeDate) return;
-      const delta = g.dx < -50 ? -7 : g.dx > 50 ? +7 : 0;  // 7 days = 1 week
-      if (!delta) return;
-      const next = new Date(date);
-      next.setDate(date.getDate() + delta);
-      onChangeDate(next);
-    },
-  });
+  /* helper: compare two dates by **calendar week** (ISO, Mon‑based) */
+  const sameWeek = (a, b) => {
+    const toMonday = (d) => {
+      const n = new Date(d);             // clone
+      const day = (n.getDay() + 6) % 7;  // Mon = 0 … Sun = 6
+      n.setDate(n.getDate() - day);
+      n.setHours(0, 0, 0, 0);
+      return n.getTime();
+    };
+    return toMonday(a) === toMonday(b);
+  };
 
   return (
-    <View style={{ flex: 1 }} {...panResponder.panHandlers}>
+    <View style={{ flex: 1 }}>
       <BigCalendar
         events={mapped}
         mode="week"
-        date={date}
-        weekStartsOn={1}
+        date={date}            /* anchor date (any day in the week) */
+        weekStartsOn={1}       /* 0 = Sunday, 1 = Monday */
+        swipeEnabled           /* ← / → changes week for us */
         height={600}
+        onChangeDate={([start]) => {
+          /* Fire only when the week actually changes */
+          if (onChangeDate && !sameWeek(start, date)) {
+            onChangeDate(start);
+          }
+        }}
         onPressDateHeader={(d) => onSelectDate?.(d)}
         onPressEvent={(evt) => onPressEvent?.(evt.id)}
       />
