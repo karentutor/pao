@@ -1,8 +1,16 @@
-// src/app/_layout.js   (or app/_layout.tsx if you prefer TS)
+// app/_layout.js (or .tsx)
 import { Stack } from 'expo-router';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 export default function RootLayout() {
   return (
-      <Stack screenOptions={{ headerShown: false }} />
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      {/* any providers you already have can stay here */}
+      <Stack
+        screenOptions={{
+          headerShown: false,   // or your own defaults
+        }}
+      />
+    </GestureHandlerRootView>
   );
 }

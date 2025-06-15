@@ -1,5 +1,5 @@
 /* ──────────────────────────────────────────────────────────
-   event/[id].js – display + voice‑driven edit wizard + delete
+   task/[id].js – display + voice‑driven edit wizard + delete
    ────────────────────────────────────────────────────────── */
 import { useEffect, useState, useRef, useCallback } from "react";
 import { View, Text, TouchableOpacity, Alert } from "react-native";
@@ -13,7 +13,7 @@ import * as Speech from "expo-speech";
 import { parse as chronoParse } from "chrono-node";
 
 /* ---------- persistence ---------- */
-const PATH = FileSystem.documentDirectory + "calendar/events.json";
+const PATH = FileSystem.documentDirectory + "todo/tasks.json";
 const load  = async () => JSON.parse(await FileSystem.readAsStringAsync(PATH));
 const save  = async (list) =>
   FileSystem.writeAsStringAsync(PATH, JSON.stringify(list, null, 2));
@@ -23,46 +23,29 @@ const speak = (txt) =>
   new Promise((res) =>
     Speech.speak(txt, { language: "en-US", onDone: res, onStopped: res, onError: res })
   );
-const minutesFromText = (t) => {
-  const x = parseFloat(t);
-  if (Number.isFinite(x)) {
-    if (t.includes("hour")) return Math.round(x * 60);
-    if (t.includes("minute")) return Math.round(x);
-  }
-  if (/half\s+an?\s+hour/.test(t)) return 30;
-  return null;
-};
-const normalizeTimeForSpeech = (t) => {
-  const digits = t.replace(/[^\d]/g, "");
-  if (digits.length === 3) return `${digits[0]}:${digits.slice(1)}`;
-  if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
-  return t.replace(/\s+/, ":");
-};
 
 /* ---------- constants ---------- */
-const fieldKeys = ["title", "date", "time", "duration", "description"];
+const fieldKeys = ["title", "description", "dueDate"];
 const prompts   = [
-  "Please say the event title.",
-  "Now say the event date.",
-  "Now say the event start time.",
-  "How long is the event?",
-  "Finally, describe the event.",
+  "Please say the task title.",
+  "Describe the task.",
+  "What is the due date?",
 ];
 const SILENCE_MS = 1500;
 
 /* ──────────────────────────────────────────────────────────
    Component
    ────────────────────────────────────────────────────────── */
-export default function EventDetails() {
+export default function TaskDetails() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
 
-  /* event record */
-  const [event, setEvent] = useState(null);
+  /* task record */
+  const [task, setTask] = useState(null);
 
   /* wizard state */
   const [editing, setEditing] = useState(false);
-  const [step, setStep]       = useState(0);          // 0‑4 fields, 5 confirm
+  const [step, setStep]       = useState(0);         // 0‑2 fields, 3 confirm
   const [draft, setDraft]     = useState(null);
 
   /* live UI */
@@ -70,12 +53,11 @@ export default function EventDetails() {
   const [listening, setListening] = useState(false);
 
   /* refs */
-  const bufRef     = useRef("");
-  const tmrRef     = useRef(null);
-  const ttsRef     = useRef(false);
-  const recogOK    = useRef(false);
-  const gate       = useRef(false);
-  const aliveRef   = useRef(true);
+  const bufRef   = useRef("");
+  const tmrRef   = useRef(null);
+  const recogOK  = useRef(false);
+  const gate     = useRef(false);
+  const aliveRef = useRef(true);
 
   /* ---------- speech helpers ---------- */
   const stopRecog = useCallback(() => {
@@ -94,12 +76,12 @@ export default function EventDetails() {
     setListening(true);
   }, []);
 
-  /* ---------- load event once ---------- */
+  /* ---------- load task ---------- */
   useEffect(() => {
     (async () => {
       try {
         const list = await load();
-        setEvent(list.find((e) => String(e.id) === String(id)));
+        setTask(list.find((t) => String(t.id) === String(id)));
       } catch {}
     })();
   }, [id]);
@@ -120,21 +102,19 @@ export default function EventDetails() {
   useSpeechRecognitionEvent("result", (evt) => {
     if (editing) return;
     const spoken = (evt.results?.[0]?.transcript ?? evt.value ?? "").trim().toLowerCase();
-    if (spoken.includes("calendar")) router.back();
-    if (spoken.includes("edit") && spoken.includes("event")) beginEdit();
-    if ((spoken.includes("delete") || spoken.includes("remove")) && spoken.includes("event")) {
-      confirmDelete();
-    }
+    if (spoken.includes("back")) router.back();
+    if (spoken.includes("edit") && spoken.includes("task")) beginEdit();
+    if (spoken.includes("delete") || spoken.includes("remove")) confirmDelete();
   });
 
   /* ---------- wizard driver ---------- */
   useEffect(() => {
-    if (!editing || step > 5) return;
+    if (!editing || step > 3) return;
     let cancelled = false;
 
     (async () => {
-      /* step 0‑4 – ask question */
-      if (step <= 4) {
+      /* step 0‑2 – ask question */
+      if (step <= 2) {
         stopRecog();
         await speak(prompts[step]);
         if (cancelled || !aliveRef.current) return;
@@ -148,15 +128,13 @@ export default function EventDetails() {
         return;
       }
 
-      /* step 5 – confirmation */
-      if (step === 5) {
+      /* step 3 – confirmation */
+      if (step === 3) {
         stopRecog();
-        const minsTxt = minutesFromText(draft.duration) ?? draft.duration;
         const summary =
-          `You said: Title ${draft.title}. Date ${draft.date}. `
-        + `Time ${normalizeTimeForSpeech(draft.time)}. `
-        + `Duration ${draft.duration} (${minsTxt} minutes). `
-        + `Description ${draft.description}. If this is correct, say Save or Yes. Otherwise say No.`;
+          `You said: Title ${draft.title}. `
+        + `Description ${draft.description}. `
+        + `Due ${draft.dueDate}. If this is correct, say Save or Yes. Otherwise say No.`;
         await speak(summary);
         if (cancelled || !aliveRef.current) return;
 
@@ -187,21 +165,20 @@ export default function EventDetails() {
 
   /* ---------- wizard speech handler ---------- */
   useSpeechRecognitionEvent("result", async (evt) => {
-    if (!editing || !gate.current || ttsRef.current) return;
+    if (!editing || !gate.current) return;
 
     const res   = evt.results?.[evt.resultIndex ?? 0] ?? {};
     const txt   = res.transcript ?? evt.value ?? "";
     const final = res.isFinal ?? false;
     if (!txt) return;
 
-    /* step 5 – confirmation */
-    if (step === 5) {
+    /* step 3 – confirmation */
+    if (step === 3) {
       if (/^(?:yes|save)\b/i.test(txt)) {
         stopRecog(); gate.current = false;
         await commitChanges();
         return;
       }
-
       if (/^no\b/i.test(txt)) {
         stopRecog(); gate.current = false;
         await speak("Okay, let's start again.");
@@ -211,7 +188,7 @@ export default function EventDetails() {
       return;
     }
 
-    /* collecting steps 0‑4 */
+    /* collecting steps 0‑2 */
     if (txt !== bufRef.current) { bufRef.current = txt; setLive(txt); }
     clearTimeout(tmrRef.current);
     tmrRef.current = setTimeout(() => { stopRecog(); commitField(); }, SILENCE_MS);
@@ -219,18 +196,13 @@ export default function EventDetails() {
   });
 
   /* ---------- begin edit ---------- */
-  async function beginEdit() {
-    if (!event) return;
-
-    const d = new Date(event.date);
+  function beginEdit() {
+    if (!task) return;
     setDraft({
-      title: event.title,
-      date : d.toLocaleDateString(),
-      time : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      duration: `${event.durationMinutes} minutes`,
-      description: event.description,
+      title: task.title,
+      description: task.description,
+      dueDate: new Date(task.dueDate).toLocaleDateString(),
     });
-
     setEditing(true);
     setStep(0);
   }
@@ -247,49 +219,41 @@ export default function EventDetails() {
     gate.current = false;
 
     /* merge & parse */
-    const mins = minutesFromText(draft.duration) ?? event.durationMinutes;
-    const spokenTime = normalizeTimeForSpeech(draft.time);
-    const newDate =
-      chronoParse(`${draft.date} ${spokenTime}`, new Date(), { forwardDate: true })[0]?.date?.()
-      ?? new Date(event.date);
+    const due =
+      chronoParse(draft.dueDate, new Date(), { forwardDate: true })[0]?.date?.()
+      ?? new Date(task.dueDate);
 
-    const updated = {
-      ...event,
-      title: draft.title,
-      date : newDate,
-      durationMinutes: mins,
-      description: draft.description,
-    };
+    const updated = { ...task, ...draft, dueDate: due };
 
     /* save list */
     const list = await load();
-    const idx  = list.findIndex((e) => e.id === event.id);
+    const idx  = list.findIndex((t) => t.id === task.id);
     if (idx >= 0) {
       list[idx] = updated;
       await save(list);
-      setEvent(updated);
+      setTask(updated);
     }
     setEditing(false);
-    await speak("Event updated.");
+    await speak("Task updated.");
     startRecog();
   }
 
   /* ---------- delete ---------- */
-  async function deleteEvent() {
+  async function deleteTask() {
     const list = await load();
-    const remaining = list.filter((e) => e.id !== event.id);
+    const remaining = list.filter((t) => t.id !== task.id);
     await save(remaining);
-    await speak("Event deleted.");
+    await speak("Task deleted.");
     router.back();
   }
   const confirmDelete = () =>
-    Alert.alert("Delete event", "Are you sure?", [
+    Alert.alert("Delete task", "Are you sure?", [
       { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: deleteEvent },
+      { text: "Delete", style: "destructive", onPress: deleteTask },
     ]);
 
   /* ---------- render ---------- */
-  if (!event) {
+  if (!task) {
     return (
       <View style={{ padding: 20 }}>
         <Text>Loading…</Text>
@@ -297,14 +261,11 @@ export default function EventDetails() {
     );
   }
 
-  const end = new Date(event.date);
-  end.setMinutes(end.getMinutes() + (event.durationMinutes ?? 60));
-
   return (
     <View style={{ flex: 1, padding: 20 }}>
       <Stack.Screen
         options={{
-          title: event.title,
+          title: task.title,
           headerLeft: () => (
             <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 10 }}>
               <Text style={{ fontSize: 18 }}>← Back</Text>
@@ -331,15 +292,9 @@ export default function EventDetails() {
         </TouchableOpacity>
       )}
 
-      <Text style={{ fontSize: 24, marginBottom: 12 }}>{event.title}</Text>
-      <Text>Date: {new Date(event.date).toLocaleDateString()}</Text>
-      <Text>
-        Time: {new Date(event.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-        {" — "}
-        {end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-      </Text>
-      <Text>Duration: {event.durationMinutes} min</Text>
-      <Text style={{ marginTop: 12 }}>Description: {event.description}</Text>
+      <Text style={{ fontSize: 24, marginBottom: 12 }}>{task.title}</Text>
+      <Text>Description: {task.description}</Text>
+      <Text>Due: {new Date(task.dueDate).toLocaleDateString()}</Text>
 
       {/* action buttons */}
       <TouchableOpacity
@@ -352,7 +307,7 @@ export default function EventDetails() {
           alignSelf: "flex-start",
         }}
       >
-        <Text style={{ color: "white", fontWeight: "600" }}>Edit event</Text>
+        <Text style={{ color: "white", fontWeight: "600" }}>Edit task</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
@@ -365,7 +320,7 @@ export default function EventDetails() {
           alignSelf: "flex-start",
         }}
       >
-        <Text style={{ color: "white", fontWeight: "600" }}>Delete event</Text>
+        <Text style={{ color: "white", fontWeight: "600" }}>Delete task</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
@@ -378,12 +333,12 @@ export default function EventDetails() {
           alignSelf: "flex-start",
         }}
       >
-        <Text style={{ color: "white" }}>Back to calendar</Text>
+        <Text style={{ color: "white" }}>Back to list</Text>
       </TouchableOpacity>
 
       {editing && (
         <Text style={{ marginTop: 20, fontStyle: "italic" }}>
-          {listening ? `🎙 ${live}` : `🎤 ${prompts[Math.min(step, 4)]}`}
+          {listening ? `🎙 ${live}` : `🎤 ${prompts[Math.min(step, 2)]}`}
         </Text>
       )}
     </View>
