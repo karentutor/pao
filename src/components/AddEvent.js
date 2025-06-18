@@ -1,5 +1,5 @@
 /* ──────────────────────────────────────────────────────────
-   AddEvent.js – voice wizard + validation + save / cancel
+   AddEvent.js – voice wizard + repeats + validation
    ────────────────────────────────────────────────────────── */
 import React, {
   useState,
@@ -13,26 +13,29 @@ import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
-import * as Speech from "expo-speech";
+import { speak, stopSpeaking as stopTTS } from "../utils/tts";
 import { parse as chronoParse } from "chrono-node";
 
 /* ---------- constants ---------- */
-const fieldKeys = ["title", "date", "time", "duration", "description"];
+const fieldKeys = [
+  "title",
+  "date",
+  "time",
+  "duration",
+  "description",
+  "frequency",
+];
 const prompts = [
   "Please say the event title (max ten words).",
   "Now say the event date.",
   "Now say the event start time.",
   "How long is the event?",
   "Finally, describe the event (at least twenty characters).",
+  "Does this event repeat? Say None, Daily, Weekly or Monthly.",
 ];
 const SILENCE_MS = 1500;
 
 /* ---------- helpers ---------- */
-const speak = (txt) =>
-  new Promise((res) =>
-    Speech.speak(txt, { language: "en-US", onDone: res, onStopped: res, onError: res })
-  );
-
 const parseDurationMinutes = (text) => {
   const t = text.toLowerCase();
   const num = parseFloat(t);
@@ -51,9 +54,8 @@ const normalizeTime = (t) => {
   return t.replace(/\s+/, ":");
 };
 
-/* ---------- validation ---------- */
 function validateField(key, value) {
-  const clean = value.trim();
+  const clean = value.trim().toLowerCase();
   switch (key) {
     case "title":
       return clean.split(/\s+/).length > 10
@@ -68,19 +70,21 @@ function validateField(key, value) {
         ? "I couldn't understand that date."
         : null;
     case "time":
-      return chronoParse(`today ${clean}`, new Date())[0]?.start?.knownValues?.hour === undefined
+      return chronoParse(`today ${clean}`, new Date())[0]?.start?.knownValues
+        ?.hour === undefined
         ? "That time is unclear."
         : null;
+    case "frequency": {
+      const ok = ["none", "daily", "weekly", "monthly"].includes(clean);
+      return ok ? null : "Please say None, Daily, Weekly or Monthly.";
+    }
     default:
       return null;
   }
 }
 
-/* ──────────────────────────────────────────────────────────
-   Component
-   ────────────────────────────────────────────────────────── */
+/* ────────────────────────────────────────────────────────── */
 export default function AddEvent({ onSave, onCancel }) {
-  /* wizard state */
   const [step, setStep] = useState(0);
   const [data, setData] = useState({
     title: "",
@@ -88,6 +92,7 @@ export default function AddEvent({ onSave, onCancel }) {
     time: "",
     duration: "",
     description: "",
+    frequency: "none",
   });
   const [live, setLive] = useState("");
   const [error, setError] = useState("");
@@ -122,22 +127,21 @@ export default function AddEvent({ onSave, onCancel }) {
     recogOK.current = true;
   });
 
-  /* ---------- navigation helpers ---------- */
   const cancelAndReturn = () => {
-    Speech.stop();
+    stopTTS();
     stopRecog();
     gateRef.current = false;
     onCancel?.();
   };
 
-  const persist = () =>
-    onSave?.({ ...data, duration: parseDurationMinutes(data.duration) });
-
   const persistAndReturn = () => {
-    Speech.stop();
+    stopTTS();
     stopRecog();
     gateRef.current = false;
-    persist();
+    onSave?.({
+      ...data,
+      duration: parseDurationMinutes(data.duration),
+    });
     onCancel?.();
   };
 
@@ -145,32 +149,36 @@ export default function AddEvent({ onSave, onCancel }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (step > 6) return;
+      if (step > 6) return; // finished
       const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!perm.granted) {
         Alert.alert("Mic needed", "Enable microphone");
         return;
       }
 
-      if (step <= 4) {
-        startRecog();
-        while (!recogOK.current && aliveRef.current && !cancelled)
-          await new Promise((r) => setTimeout(r, 60));
-        if (cancelled || !aliveRef.current) return;
-
+      /* Steps 0‑5: prompt, then listen */
+      if (step <= 5) {
         ttsRef.current = true;
         await speak(prompts[step]);
         ttsRef.current = false;
+
+        startRecog();
+        while (!recogOK.current && aliveRef.current && !cancelled)
+          await new Promise((r) => setTimeout(r, 60));
+
         gateRef.current = true;
         return;
       }
 
-      if (step === 5) {
+      /* Step 6 – confirmation */
+      if (step === 6) {
         const mins = parseDurationMinutes(data.duration);
         const summary =
           `You said: Title ${data.title}. Date ${data.date}. ` +
           `Time ${normalizeTime(data.time)}. Duration ${data.duration} (${mins} min). ` +
-          `Description ${data.description}. If this is correct, say Save or Yes. Otherwise say No or Cancel.`;
+          `Description ${data.description}. Repeat ${data.frequency}. ` +
+          `If this is correct, say Save or Yes. Otherwise say No or Cancel.`;
+
         ttsRef.current = true;
         await speak(summary);
         ttsRef.current = false;
@@ -178,9 +186,11 @@ export default function AddEvent({ onSave, onCancel }) {
         startRecog();
         while (!recogOK.current && aliveRef.current && !cancelled)
           await new Promise((r) => setTimeout(r, 60));
+
         gateRef.current = true;
       }
     })();
+
     return () => {
       cancelled = true;
     };
@@ -190,10 +200,12 @@ export default function AddEvent({ onSave, onCancel }) {
   const commitField = useCallback(async () => {
     const clean = bufRef.current.trim();
     const key = fieldKeys[step];
+
     if (clean) {
       const err = validateField(key, clean);
       if (err) {
         setError(err);
+        setData((p) => ({ ...p, [key]: "" }));
         bufRef.current = "";
         setLive("");
         gateRef.current = false;
@@ -203,9 +215,15 @@ export default function AddEvent({ onSave, onCancel }) {
         startRecog();
         return;
       }
-      setData((p) => ({ ...p, [key]: clean }));
+      /* VALID */
+      setData((p) => ({
+        ...p,
+        [key]: key === "frequency" ? clean.toLowerCase() : clean,
+      }));
       setError("");
     }
+
+    /* next step */
     bufRef.current = "";
     setLive("");
     gateRef.current = false;
@@ -221,14 +239,14 @@ export default function AddEvent({ onSave, onCancel }) {
     const final = res.isFinal ?? false;
     if (!txt) return;
 
-    /* allow global cancel */
+    /* global cancel */
     if (/^cancel\b/i.test(txt)) {
       cancelAndReturn();
       return;
     }
 
-    /* confirm stage */
-    if (step === 5) {
+    /* confirmation step */
+    if (step === 6) {
       if (/^(?:yes|save)\b/i.test(txt)) {
         persistAndReturn();
         return;
@@ -239,10 +257,10 @@ export default function AddEvent({ onSave, onCancel }) {
         setStep(0);
         return;
       }
-      return; // ignore other words
+      return;
     }
 
-    /* collecting stages */
+    /* collecting steps */
     if (txt !== bufRef.current) {
       bufRef.current = txt;
       setLive(txt);
@@ -258,17 +276,6 @@ export default function AddEvent({ onSave, onCancel }) {
     }
   });
 
-  /* ---------- completion gate ---------- */
-  const isComplete = useMemo(
-    () =>
-      fieldKeys.every((k) => data[k].trim() !== "") &&
-      !validateField("title", data.title) &&
-      !validateField("description", data.description) &&
-      !validateField("date", data.date) &&
-      !validateField("time", data.time),
-    [data]
-  );
-
   /* ---------- cleanup ---------- */
   useEffect(
     () => () => {
@@ -279,15 +286,22 @@ export default function AddEvent({ onSave, onCancel }) {
   );
 
   /* ---------- UI ---------- */
+  const isComplete = useMemo(
+    () =>
+      fieldKeys.every((k) => data[k].trim() !== "") &&
+      !fieldKeys.some((k) => validateField(k, data[k])),
+    [data]
+  );
+
   return (
     <View style={{ flex: 1, padding: 16 }}>
       <Text style={{ fontSize: 22, fontWeight: "600", marginBottom: 16 }}>
         🆕 Add Event
       </Text>
       <Text style={{ fontSize: 18, marginBottom: 8 }}>
-        {step <= 4
+        {step <= 5
           ? prompts[step]
-          : step === 5
+          : step === 6
           ? "Confirm the details…"
           : "Event saved ✔︎"}
       </Text>
@@ -302,6 +316,7 @@ export default function AddEvent({ onSave, onCancel }) {
         <Text>Time: {normalizeTime(data.time)}</Text>
         <Text>Duration: {data.duration}</Text>
         <Text>Description: {data.description}</Text>
+        <Text>Repeat: {data.frequency}</Text>
       </View>
 
       {/* Cancel button */}
@@ -320,7 +335,7 @@ export default function AddEvent({ onSave, onCancel }) {
         <Text style={{ color: "#fff" }}>Cancel</Text>
       </TouchableOpacity>
 
-      {step === 5 && (
+      {step === 6 && (
         <TouchableOpacity
           disabled={!isComplete}
           onPress={persistAndReturn}

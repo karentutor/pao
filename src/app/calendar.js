@@ -1,13 +1,8 @@
 /* ──────────────────────────────────────────────────────────
-   calendar.js – voice navigation + events + tasks
+   calendar.js – voice navigation + events (repeat support)
    ────────────────────────────────────────────────────────── */
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  Alert,
-  TouchableOpacity,
-} from "react-native";
+import { View, Text, Alert, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import {
@@ -16,14 +11,13 @@ import {
 } from "expo-speech-recognition";
 import * as FileSystem from "expo-file-system";
 import { parse as chronoParse } from "chrono-node";
+import attemptExit from "../utils/attemptExit";
 
 import DayCalendar   from "../components/DayCalendar";
 import WeekCalendar  from "../components/WeekCalendar";
 import MonthCalendar from "../components/MonthCalendar";
 import YearCalendar  from "../components/YearCalendar";
 import AddEvent      from "../components/AddEvent";
-import AddTask       from "../components/AddTask";
-import TaskList      from "../components/TaskList";
 
 /* ────────────────── header & listening line ────────────────── */
 const CalendarHeader = ({ viewMode, onChangeView, monthLabel }) => {
@@ -46,9 +40,7 @@ const CalendarHeader = ({ viewMode, onChangeView, monthLabel }) => {
         marginRight: 6,
       }}
     >
-      <Text style={{ color: viewMode === mode ? "#fff" : "#000" }}>
-        {label}
-      </Text>
+      <Text style={{ color: viewMode === mode ? "#fff" : "#000" }}>{label}</Text>
     </TouchableOpacity>
   );
 
@@ -62,7 +54,9 @@ const CalendarHeader = ({ viewMode, onChangeView, monthLabel }) => {
       }}
     >
       <View style={{ flexDirection: "row" }}>
-        {modes.map(([mode, label]) => <Btn mode={mode} label={label} key={mode} />)}
+        {modes.map(([mode, label]) => (
+          <Btn mode={mode} label={label} key={mode} />
+        ))}
       </View>
       <Text style={{ fontSize: 18, fontWeight: "600" }}>{monthLabel}</Text>
     </View>
@@ -75,10 +69,9 @@ const ListeningLine = ({ listening }) => (
   </Text>
 );
 
-/* ────────────────────────────────────────── */
+/* ───────────────────────────────────────── */
 
 const EVENTS_PATH = FileSystem.documentDirectory + "calendar/events.json";
-const TASKS_PATH  = FileSystem.documentDirectory + "calendar/tasks.json";
 
 async function ensureDir() {
   const dir = FileSystem.documentDirectory + "calendar";
@@ -86,46 +79,62 @@ async function ensureDir() {
   if (!info.exists) await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
 }
 
+/* ---------------- helpers ---------------- */
+const datePlusDays = (base, n) => {
+  const d = new Date(base);
+  d.setDate(d.getDate() + n);
+  return d;
+};
+
+const buildRepeats = (firstDate, freq, max = 12) => {
+  if (freq === "none") return [];
+  const items = [];
+  for (let i = 1; i <= max; i++) {
+    const d = new Date(firstDate);
+    if (freq === "daily")   d.setDate(d.getDate() + i);
+    if (freq === "weekly")  d.setDate(d.getDate() + i * 7);
+    if (freq === "monthly") d.setMonth(d.getMonth() + i);
+    items.push(d);
+  }
+  return items;
+};
+
 /* ───────────────────────────────────────── */
 
 export default function Calendar() {
-  const router    = useRouter();
-  const isFocused = useIsFocused();
+  const router     = useRouter();
+  const isFocused  = useIsFocused();
 
   /* UI state */
-  const [viewMode, setViewMode]         = useState("day");   // day | week | month | year | add | addTask
-  const [selectedDate, setSelectedDate] = useState(new Date());
-  const [events, setEvents]             = useState([]);
-  const [tasks,  setTasks]              = useState([]);
-  const [recognizing, setRecognizing]   = useState(false);
+  const [viewMode,      setViewMode]      = useState("week"); // default
+  const [selectedDate,  setSelectedDate]  = useState(new Date());
+  const [events,        setEvents]        = useState([]);
+  const [recognizing,   setRecognizing]   = useState(false);
 
   /* refs */
-  const aliveRef      = useRef(true);
-  const runningRef    = useRef(false);
-  const lastErrorRef  = useRef(null);
-  const lastSwitchRef = useRef(0);
+  const aliveRef   = useRef(true);
+  const runningRef = useRef(false);
+  const lastErrRef = useRef(null);
+  const switchTS   = useRef(0);           // debounce view changes
 
-  /* month label (e.g. "June 2025") */
+  /* month label (e.g. “June 2025”) */
   const monthLabel = useMemo(
-    () => selectedDate.toLocaleString("en-US", { month: "long", year: "numeric" }),
+    () =>
+      selectedDate.toLocaleString("en-US", { month: "long", year: "numeric" }),
     [selectedDate]
   );
 
-  /* ─── load / save events & tasks ─── */
+  /* ─── load & persist events ─── */
   useEffect(() => {
     (async () => {
       try {
         await ensureDir();
-        const eInfo = await FileSystem.getInfoAsync(EVENTS_PATH);
-        if (eInfo.exists) {
+        const info = await FileSystem.getInfoAsync(EVENTS_PATH);
+        if (info.exists) {
           setEvents(JSON.parse(await FileSystem.readAsStringAsync(EVENTS_PATH)));
         }
-        const tInfo = await FileSystem.getInfoAsync(TASKS_PATH);
-        if (tInfo.exists) {
-          setTasks(JSON.parse(await FileSystem.readAsStringAsync(TASKS_PATH)));
-        }
       } catch (err) {
-        console.warn("Failed to load calendar data:", err);
+        console.warn("Failed to load events:", err);
       }
     })();
   }, []);
@@ -135,18 +144,18 @@ export default function Calendar() {
       try {
         await ensureDir();
         await FileSystem.writeAsStringAsync(EVENTS_PATH, JSON.stringify(events, null, 2));
-        await FileSystem.writeAsStringAsync(TASKS_PATH , JSON.stringify(tasks , null, 2));
       } catch (err) {
-        console.warn("Failed to save calendar data:", err);
+        console.warn("Failed to save events:", err);
       }
     })();
-  }, [events, tasks]);
+  }, [events]);
 
-  /* stop recogniser safely */
-  const haltRecognizer = () => { try { ExpoSpeechRecognitionModule.stop(); } catch {} };
+  /* ---------- recogniser helpers ---------- */
+  const stopRec = () => {
+    try { ExpoSpeechRecognitionModule.stop(); } catch {}
+  };
 
-  /* ───────────────── speech callbacks (unchanged) ───────────────── */
-
+  /* ─── speech callbacks ─── */
   useSpeechRecognitionEvent("start", () => {
     if (!isFocused || runningRef.current) return;
     runningRef.current = true;
@@ -157,157 +166,141 @@ export default function Calendar() {
     if (!isFocused || !runningRef.current) return;
     runningRef.current = false;
     setRecognizing(false);
-    if (lastErrorRef.current === "audio-capture") { lastErrorRef.current = null; return; }
+
+    if (lastErrRef.current === "audio-capture") { lastErrRef.current = null; return; }
+
     setTimeout(() => {
       if (!aliveRef.current) return;
       try {
-        ExpoSpeechRecognitionModule.start({ lang:"en-US", interimResults:true, continuous:true });
+        ExpoSpeechRecognitionModule.start({ lang: "en-US", interimResults: true, continuous: true });
       } catch {}
-    }, 1200);
+    }, 1000);
   });
+
+  useSpeechRecognitionEvent("error", (e) => { lastErrRef.current = e.error; });
 
   useSpeechRecognitionEvent("result", (evt) => {
     if (!isFocused || !runningRef.current) return;
-    const text = evt.results?.[0]?.transcript ?? evt.value ?? "";
-    const tokens = text.toLowerCase().trim().split(/\s+/);
+    const text   = evt.results?.[0]?.transcript?.toLowerCase() ?? "";
+    const tokens = text.trim().split(/\s+/);
 
-    /* relative date keywords -------------------------------------------------- */
-    if (!["add", "addTask"].includes(viewMode)) {
+    /* exit */
+    if (/^(exit|close)\b/.test(text)) { stopRec(); attemptExit(); return; }
+
+    /* relative dates */
+    if (!["add"].includes(viewMode)) {
       if (tokens.includes("today"))      setSelectedDate(new Date());
-      if (tokens.includes("tomorrow"))   setSelectedDate(datePlusDays(1));
-      if (tokens.includes("yesterday"))  setSelectedDate(datePlusDays(-1));
+      if (tokens.includes("tomorrow"))   setSelectedDate(datePlusDays(selectedDate, 1));
+      if (tokens.includes("yesterday"))  setSelectedDate(datePlusDays(selectedDate, -1));
     }
 
-    /* wizards ----------------------------------------------------------------- */
-    if (tokens.includes("add") && (tokens.includes("event") || tokens.includes("desk"))) {
-      if (viewMode !== "add") { haltRecognizer(); setViewMode("add"); }
-      return;
-    }
-    if (tokens.includes("add") && tokens.includes("task")) {
-      if (viewMode !== "addTask") { haltRecognizer(); setViewMode("addTask"); }
-      return;
+    /* add event wizard */
+    if (tokens.includes("add") && tokens.includes("event") && viewMode !== "add") {
+      stopRec(); setViewMode("add"); return;
     }
 
-    /* view switching ---------------------------------------------------------- */
-    if (!["add", "addTask"].includes(viewMode)) {
-      const last = tokens.at(-1);
-      /* include "month" in voice commands */
-      const target = ["day", "week", "month", "year"].includes(last) ? last : null;
+    /* view switch */
+    const target = tokens.at(-1);
+    if (["day", "week", "month", "year"].includes(target) && target !== viewMode) {
       const now = Date.now();
-      if (target && target !== viewMode && now - lastSwitchRef.current > 1000) {
-        setViewMode(target); lastSwitchRef.current = now;
-      }
+      if (now - switchTS.current > 800) { setViewMode(target); switchTS.current = now; }
     }
   });
 
-  useSpeechRecognitionEvent("error", e => { lastErrorRef.current = e.error; });
-
   /* focus lifecycle */
-  useFocusEffect(useCallback(() => {
-    aliveRef.current = true;
-    (async () => {
-      const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert("Permission required", "Enable microphone access in Settings.");
-        return;
-      }
-      ExpoSpeechRecognitionModule.start({ lang:"en-US", interimResults:true, continuous:true });
-    })();
-    return () => { aliveRef.current=false; runningRef.current=false; haltRecognizer(); };
-  }, []));
+  useFocusEffect(
+    useCallback(() => {
+      aliveRef.current = true;
+      (async () => {
+        const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert("Permission required", "Enable microphone in Settings.");
+          return;
+        }
+        ExpoSpeechRecognitionModule.start({ lang: "en-US", interimResults: true, continuous: true });
+      })();
+      return () => { aliveRef.current = false; runningRef.current = false; stopRec(); };
+    }, [])
+  );
 
-  /* ---------------- helpers ---------------- */
-  const datePlusDays = (n) => {
-    const d = new Date(selectedDate); d.setDate(d.getDate()+n); return d;
-  };
-
-  const handleSaveEvent = useCallback(detail => {
+  /* ---------- save handler ---------- */
+  const saveEvent = useCallback((detail) => {
     const dateObj =
-      chronoParse(`${detail.date} ${detail.time}`, new Date(), { forwardDate:true })[0]?.date?.()
-      ?? chronoParse(detail.date, new Date(), { forwardDate:true })[0]?.date?.()
-      ?? new Date();
-    if (detail.time.trim()==="") dateObj.setHours(9,0,0,0);
+      chronoParse(`${detail.date} ${detail.time}`, new Date(), { forwardDate: true })[0]?.date?.() ??
+      chronoParse(detail.date,                    new Date(), { forwardDate: true })[0]?.date?.() ??
+      new Date();
 
-    setEvents(prev=>[...prev,{
-      id:Date.now(), title:detail.title||"Untitled", date:dateObj,
-      durationMinutes:detail.duration??60, description:detail.description,
-    }]);
-    setSelectedDate(dateObj); setViewMode("week");
-  }, []);
+    if (detail.time.trim() === "") dateObj.setHours(9, 0, 0, 0);
 
-  const handleSaveTask = useCallback(detail => {
-    const due = chronoParse(detail.dueDate,new Date(),{forwardDate:true})[0]?.date?.() ?? new Date();
-    setTasks(prev=>[...prev,{
-      id:Date.now(), title:detail.title||"Untitled",
-      description:detail.description, dueDate:due, completed:false,
-    }]);
+    const base = {
+      id:        Date.now(),
+      title:     detail.title || "Untitled",
+      date:      dateObj,
+      duration:  detail.duration ?? 60,
+      repeat:    detail.frequency ?? "none",
+      desc:      detail.description,
+    };
+
+    const repeats = buildRepeats(dateObj, base.repeat).map((d) => ({
+      ...base,
+      id: base.id + d.getTime(),
+      date: d,
+    }));
+
+    setEvents((prev) => [...prev, base, ...repeats]);
+    setSelectedDate(dateObj);
     setViewMode("week");
   }, []);
 
-  const toggleTask  = id => setTasks(prev=>prev.map(t=>t.id===id?{...t,completed:!t.completed}:t));
-  const deleteTask  = id => setTasks(prev=>prev.filter(t=>t.id!==id));
-  const openEvent   = id => router.push(`/event/${id}`);
-
-  /* ---------- render wizards with CANCEL prop ---------- */
+  /* ---------- wizards ---------- */
   if (viewMode === "add") {
     return (
       <AddEvent
-        onSave={handleSaveEvent}
-        onCancel={() => { haltRecognizer(); setViewMode("week"); }}
-      />
-    );
-  }
-  if (viewMode === "addTask") {
-    return (
-      <AddTask
-        onSave={handleSaveTask}
-        onCancel={() => { haltRecognizer(); setViewMode("week"); }}
+        onSave={saveEvent}
+        onCancel={() => { stopRec(); setViewMode("week"); }}
       />
     );
   }
 
   /* ---------- main UI ---------- */
   return (
-    <View style={{ flex:1, padding:16 }}>
-      {/* header: view buttons + month */}
+    <View style={{ flex: 1, padding: 16 }}>
       <CalendarHeader
         viewMode={viewMode}
-        onChangeView={(m) => setViewMode(m)}
+        onChangeView={setViewMode}
         monthLabel={monthLabel}
       />
 
-      {/* listening indicator just below header */}
       <ListeningLine listening={recognizing} />
 
-      {/* calendars */}
-      <View style={{ flex:1 }}>
-        {viewMode === "day" && (
+      <View style={{ flex: 1 }}>
+        {viewMode === "day"   && (
           <DayCalendar
             date={selectedDate}
             events={events}
             onChangeDate={setSelectedDate}
-            onPressEvent={openEvent}
+            onPressEvent={(id) => router.push(`/event/${id}`)}
           />
         )}
-        {viewMode === "week" && (
+        {viewMode === "week"  && (
           <WeekCalendar
             date={selectedDate}
             events={events}
             onChangeDate={setSelectedDate}
             onSelectDate={(d) => { setSelectedDate(d); setViewMode("day"); }}
-            onPressEvent={openEvent}
+            onPressEvent={(id) => router.push(`/event/${id}`)}
           />
         )}
         {viewMode === "month" && (
           <MonthCalendar
             date={selectedDate}
             events={events}
-            onChangeDate={(d) => setSelectedDate(d)}
+            onChangeDate={setSelectedDate}
             onSelectDate={(d) => { setSelectedDate(d); setViewMode("day"); }}
-            onPressEvent={openEvent}
+            onPressEvent={(id) => router.push(`/event/${id}`)}
           />
         )}
-        {viewMode === "year" && (
+        {viewMode === "year"  && (
           <YearCalendar
             date={selectedDate}
             onChangeDate={setSelectedDate}
@@ -315,31 +308,31 @@ export default function Calendar() {
         )}
       </View>
 
-      {/* task list */}
-      <Text style={{ marginTop:12, fontSize:16, fontWeight:"600" }}>Tasks</Text>
-      <TaskList
-        date={selectedDate}
-        tasks={tasks}
-        onToggle={toggleTask}
-        onDelete={deleteTask}
-      />
+      <TouchableOpacity
+        onPress={() => setViewMode("add")}
+        style={{
+          alignSelf: "flex-start",
+          padding: 12,
+          backgroundColor: "#007AFF",
+          borderRadius: 8,
+          marginTop: 10,
+        }}
+      >
+        <Text style={{ color: "#fff", fontWeight: "600" }}>＋ Add Event</Text>
+      </TouchableOpacity>
 
-      {/* action buttons */}
-      <View style={{ flexDirection:"row", marginTop:10 }}>
-        <TouchableOpacity
-          onPress={() => setViewMode("addTask")}
-          style={{ padding:12, backgroundColor:"#34c759", borderRadius:8, marginRight:8 }}
-        >
-          <Text style={{ color:"#fff", fontWeight:"600" }}>＋ Add Task</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setViewMode("add")}
-          style={{ padding:12, backgroundColor:"#007AFF", borderRadius:8 }}
-        >
-          <Text style={{ color:"#fff", fontWeight:"600" }}>＋ Add Event</Text>
-        </TouchableOpacity>
-      </View>
+      <TouchableOpacity
+        onPress={() => { stopRec(); attemptExit(); }}
+        style={{
+          alignSelf: "flex-start",
+          padding: 12,
+          backgroundColor: "#ff3b30",
+          borderRadius: 8,
+          marginTop: 8,
+        }}
+      >
+        <Text style={{ color: "#fff", fontWeight: "600" }}>Exit</Text>
+      </TouchableOpacity>
     </View>
   );
 }
