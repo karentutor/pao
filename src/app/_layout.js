@@ -1,51 +1,73 @@
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { View, Text, TouchableOpacity } from "react-native";
 import { Slot, Link, usePathname } from "expo-router";
-import attemptExit from "../utils/attemptExit";     // <-- NEW
+import attemptExit from "../utils/attemptExit";
 
-/* ---------- Brand header with left‑justified Exit ---------- */
-const BrandBar = () => (
-  <View
-    style={{
-      backgroundColor: "#1a2a40",         // navy
-      flexDirection: "row",
-      alignItems: "center",
-      paddingTop: 30,                     // push content down from notch
-      paddingBottom: 15,
-      paddingHorizontal: 10,
-      width: "100%",
-    }}
-  >
-    {/* Exit on the far left */}
-    <TouchableOpacity
-      onPress={attemptExit}
+/* ---------- Brand header ---------- */
+const BrandBar = () => {
+  const path = usePathname();
+  const onTaskPage = path.startsWith("/task");
+
+  return (
+    <View
       style={{
-        paddingVertical: 4,
-        paddingHorizontal: 12,
-        backgroundColor: "#ff3b30",
-        borderRadius: 6,
+        backgroundColor: "#1a2a40",
+        flexDirection: "row",
+        alignItems: "center",
+        paddingTop: 30,
+        paddingBottom: 15,
+        paddingHorizontal: 10,
+        width: "100%",
       }}
     >
-      <Text style={{ color: "#fff", fontWeight: "600" }}>Exit</Text>
-    </TouchableOpacity>
+      {/* Exit hidden when on /task */}
+      {!onTaskPage && (
+        <TouchableOpacity
+          onPress={attemptExit}
+          style={{
+            paddingVertical: 4,
+            paddingHorizontal: 12,
+            backgroundColor: "#ff3b30",
+            borderRadius: 6,
+            minWidth: 70,
+            alignItems: "center",
+          }}
+        >
+          <Text style={{ color: "#fff", fontWeight: "600" }}>Exit</Text>
+        </TouchableOpacity>
+      )}
 
-    {/* Title centred (use flex to push to centre) */}
-    <Text
-      style={{
-        flex: 1,
-        textAlign: "center",
-        fontSize: 24,
-        fontWeight: "800",
-        color: "#FFD700",
-        marginRight: 42, // width roughly equal to Exit button for perfect centring
-      }}
-    >
-      mypao
-    </Text>
-  </View>
-);
+      {/* Title */}
+      <Text
+        style={{
+          flex: 1,
+          textAlign: "center",
+          fontSize: 24,
+          fontWeight: "800",
+          color: "#FFD700",
+        }}
+      >
+        mypao
+      </Text>
 
-/* ---------- Bottom snackbar ---------- */
+      {/* Settings gear always shown */}
+      <Link href="/settings" asChild>
+        <TouchableOpacity
+          style={{
+            paddingVertical: 4,
+            paddingHorizontal: 12,
+            minWidth: 70,
+            alignItems: "center",
+          }}
+        >
+          <Text style={{ fontSize: 20, color: "#FFD700" }}>⚙️</Text>
+        </TouchableOpacity>
+      </Link>
+    </View>
+  );
+};
+
+/* ---------- Bottom snackbar (unchanged) ---------- */
 const BottomBar = () => {
   const path = usePathname();
   const is   = (p) => path.startsWith(p);

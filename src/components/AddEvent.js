@@ -100,7 +100,8 @@ export default function AddEvent({ onSave, onCancel }) {
 
   /* refs */
   const bufRef = useRef("");
-  const tmrRef = useRef(null);
+  const tmrRef = useRef(null);       // silence timer
+  const errTmrRef = useRef(null);    // **NEW** error‑clear timer
   const recogOK = useRef(false);
   const ttsRef = useRef(false);
   const gateRef = useRef(false);
@@ -204,7 +205,13 @@ export default function AddEvent({ onSave, onCancel }) {
     if (clean) {
       const err = validateField(key, clean);
       if (err) {
-        setError(err);
+        /* -------- validation fail -------- */
+        clearTimeout(errTmrRef.current);                 // ✨ NEW
+        setError(err);                                   // show error
+        errTmrRef.current = setTimeout(() => {           // auto‑clear after 3 s
+          setError("");
+        }, 3000);
+
         setData((p) => ({ ...p, [key]: "" }));
         bufRef.current = "";
         setLive("");
@@ -281,6 +288,7 @@ export default function AddEvent({ onSave, onCancel }) {
     () => () => {
       aliveRef.current = false;
       stopRecog();
+      clearTimeout(errTmrRef.current);   // ✨ NEW
     },
     [stopRecog]
   );

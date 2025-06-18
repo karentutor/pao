@@ -25,13 +25,22 @@ const NAME_KEY     = "userName";
 const PATH_TASKS   = FileSystem.documentDirectory + "todo/tasks.json";
 const PATH_EVENTS  = FileSystem.documentDirectory + "calendar/events.json";
 
+/* helper: time‑based greeting */
+const getGreeting = () => {
+  const h = new Date().getHours(); // 0‑23
+  if (h >= 4 && h < 12) return "Good morning";
+  if (h >= 12 && h < 18) return "Good afternoon";
+  /* otherwise 18‑23 or 0‑3 */
+  return "Good evening";
+};
+
 export default function MyDay() {
   const router    = useRouter();
   const isFocused = useIsFocused();
 
   /* user name */
   const [name, setName]             = useState("");
-  const [editingName, setEdit]      = useState(false);
+  const [editingName, setEdit]      = useState(false); // Only used when no name yet
   const [nameInput, setNameInput]   = useState("");
   const [nameLoaded, setNameLoaded] = useState(false);
 
@@ -58,7 +67,7 @@ export default function MyDay() {
         setName(saved);
         setNameInput(saved);
       } else {
-        setEdit(true);
+        setEdit(true);            // prompt for first‑time name entry
       }
       setNameLoaded(true);
     })();
@@ -218,7 +227,8 @@ export default function MyDay() {
 
         /* greeting */
         if (!greeted.current) {
-          const msg = `Good morning${name ? ", " + name : ""}. You have ${
+          const greet = getGreeting();
+          const msg = `${greet}${name ? ", " + name : ""}. You have ${
             tasks.length
           } task${tasks.length !== 1 ? "s" : ""} and ${events.length} event${
             events.length !== 1 ? "s" : ""
@@ -248,7 +258,7 @@ export default function MyDay() {
     }, [name, editingName, loadAgenda, nameLoaded])
   );
 
-  /* ---------- name save ---------- */
+  /* ---------- name save (first‑time only) ---------- */
   const saveName = async () => {
     const v = nameInput.trim();
     if (!v) return;
@@ -267,7 +277,8 @@ export default function MyDay() {
   };
 
   /* ---------- UI ---------- */
-  const greetingLine = `Good morning${
+  const greet = getGreeting();
+  const greetingLine = `${greet}${
     name ? ", " + name : ""
   }. You have ${tasksToday.length} task${
     tasksToday.length !== 1 ? "s" : ""
@@ -275,13 +286,13 @@ export default function MyDay() {
     eventsToday.length !== 1 ? "s" : ""
   } today. How may I help you?`;
 
-  /* common button base style for equal sizing */
+  /* base style for equal‑width buttons */
   const baseBtn = {
     flex: 1,
     paddingVertical: 12,
     borderRadius: 10,
     alignItems: "center",
-    marginHorizontal: 4,
+    marginHorizontal: 6,
   };
 
   return (
@@ -330,12 +341,12 @@ export default function MyDay() {
               {greetingLine}
             </Text>
 
-            {/* ---------- Three buttons in one row ---------- */}
+            {/* ---------- Two buttons in one row ---------- */}
             <View
               style={{
                 flexDirection: "row",
                 marginTop: 20,
-                marginHorizontal: -4, // compensate for child margins
+                marginHorizontal: -6,
               }}
             >
               {/* Open Calendar */}
@@ -355,21 +366,6 @@ export default function MyDay() {
               >
                 <Text style={{ color: "#fff", fontWeight: "600" }}>
                   Open Tasks
-                </Text>
-              </TouchableOpacity>
-
-              {/* Edit Name */}
-              <TouchableOpacity
-                onPress={() => {
-                  try {
-                    ExpoSpeechRecognitionModule.stop();
-                  } catch {}
-                  setEdit(true);
-                }}
-                style={[baseBtn, { backgroundColor: "#FFA500" }]}
-              >
-                <Text style={{ color: "#fff", fontWeight: "600" }}>
-                  Edit Name
                 </Text>
               </TouchableOpacity>
             </View>

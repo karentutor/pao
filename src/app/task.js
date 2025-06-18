@@ -1,219 +1,266 @@
-/* ──────────────────────────────────────────────────────────
-   task.js – dedicated My Tasks screen (voice + sorting)
-   ────────────────────────────────────────────────────────── */
+/* ────────────────────────────────────────────────────────
+   task.js – list, add task, voice navigation + listener UI
+   ──────────────────────────────────────────────────────── */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { View, Text, Alert, TouchableOpacity } from "react-native";
+import {
+  View,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  Alert,
+} from "react-native";
 import { useRouter } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as FileSystem from "expo-file-system";
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
-import * as FileSystem from "expo-file-system";
-import { parse as chronoParse } from "chrono-node";
-
-import attemptExit from "../utils/attemptExit";
-
-import AddTask  from "../components/AddTask";
+import { speak, stopSpeaking as stopTTS } from "../utils/tts";
 import TaskList from "../components/TaskList";
 
-const TASKS_PATH = FileSystem.documentDirectory + "calendar/tasks.json";
+const TASK_PATH = FileSystem.documentDirectory + "todo/tasks.json";
 
-async function ensureDir() {
-  const dir = FileSystem.documentDirectory + "calendar";
-  const info = await FileSystem.getInfoAsync(dir);
-  if (!info.exists) await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-}
-
-const buildRepeats = (first, freq, max = 12) => {
-  if (freq === "none") return [];
-  const out = [];
-  for (let i = 1; i <= max; i++) {
-    const d = new Date(first);
-    if (freq === "daily")   d.setDate(d.getDate() + i);
-    if (freq === "weekly")  d.setDate(d.getDate() + i * 7);
-    if (freq === "monthly") d.setMonth(d.getMonth() + i);
-    out.push(d);
+/* helper: load all tasks from storage */
+const loadTasksFromFile = async () => {
+  try {
+    const raw = await FileSystem.readAsStringAsync(TASK_PATH);
+    return JSON.parse(raw);
+  } catch {
+    return [];
   }
-  return out;
 };
 
-const sortByDate = (arr) =>
-  [...arr].sort(
-    (a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()
-  );
+/* helper: persist tasks */
+const saveTasksToFile = async (tasks) => {
+  await FileSystem.writeAsStringAsync(TASK_PATH, JSON.stringify(tasks));
+};
 
 export default function TaskScreen() {
-  const router    = useRouter();
-  const isFocused = useIsFocused();
+  const router      = useRouter();
+  const isFocused   = useIsFocused();
 
-  const [mode,   setMode]   = useState("list");
-  const [tasks,  setTasks]  = useState([]);
-  const [listen, setListen] = useState(false);
+  const [tasks, setTasks] = useState([]);
+  const [newTitle, setNewTitle] = useState("");
 
-  const alive   = useRef(true);
+  /* recogniser UI */
+  const [recognizing, setRec] = useState(false);
+  const [transcript,  setTx]  = useState("");
+
+  /* refs */
+  const navRef  = useRef(false);
   const running = useRef(false);
+  const alive   = useRef(true);
   const lastErr = useRef(null);
 
-  /* load & persist */
+  /* ---------- load tasks on mount ---------- */
   useEffect(() => {
     (async () => {
-      try {
-        await ensureDir();
-        const info = await FileSystem.getInfoAsync(TASKS_PATH);
-        if (info.exists) {
-          const raw = await FileSystem.readAsStringAsync(TASKS_PATH);
-          setTasks(sortByDate(JSON.parse(raw)));
-        }
-      } catch (err) {
-        console.warn("Failed to load tasks:", err);
-      }
+      setTasks(await loadTasksFromFile());
     })();
   }, []);
 
+  /* ---------- save tasks whenever they change ---------- */
   useEffect(() => {
-    (async () => {
-      try {
-        await ensureDir();
-        await FileSystem.writeAsStringAsync(
-          TASKS_PATH,
-          JSON.stringify(tasks, null, 2)
-        );
-      } catch (err) {
-        console.warn("Failed to save tasks:", err);
-      }
-    })();
+    saveTasksToFile(tasks);
   }, [tasks]);
 
-  const stopRec = () => { try { ExpoSpeechRecognitionModule.stop(); } catch {} };
+  /* ---------- CRUD helpers ---------- */
+  const addTask = () => {
+    const title = newTitle.trim();
+    if (!title) return;
+    const t = {
+      id: Date.now(),
+      title,
+      description: "",
+      dueDate: new Date(),
+      completed: false,
+    };
+    setTasks((prev) => [...prev, t]);
+    setNewTitle("");
+  };
 
+  const toggleTask = (id) =>
+    setTasks((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
+    );
+
+  const deleteTask = (id) =>
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+
+  /* ---------- recogniser events ---------- */
   useSpeechRecognitionEvent("start", () => {
     if (!isFocused || running.current) return;
     running.current = true;
-    setListen(true);
+    lastErr.current = null;
+    setRec(true);
+    setTx("");
+    navRef.current = false;
   });
 
   useSpeechRecognitionEvent("end", () => {
     if (!isFocused || !running.current) return;
     running.current = false;
-    setListen(false);
 
-    if (lastErr.current === "audio-capture") { lastErr.current = null; return; }
+    if (lastErr.current === "audio-capture") {
+      setRec(false);
+      lastErr.current = null;
+      return;
+    }
 
+    setRec(false);
     setTimeout(() => {
       if (!alive.current) return;
       try {
-        ExpoSpeechRecognitionModule.start({ lang: "en-US", interimResults: true, continuous: true });
+        ExpoSpeechRecognitionModule.start({
+          lang: "en-US",
+          interimResults: true,
+          continuous: true,
+        });
       } catch {}
-    }, 1000);
+    }, 300);
   });
 
-  useSpeechRecognitionEvent("error", (e) => { lastErr.current = e.error; });
-
-  useSpeechRecognitionEvent("result", (evt) => {
+  useSpeechRecognitionEvent("error", (e) => {
     if (!isFocused || !running.current) return;
-    const text = evt.results?.[0]?.transcript?.toLowerCase() ?? "";
+    lastErr.current = e.error;
+  });
 
-    if (/^(exit|close)\b/.test(text)) { stopRec(); attemptExit(); return; }
-    if (text.includes("add") && text.includes("task") && mode !== "add") {
-      stopRec(); setMode("add");
+  /* ---------- voice commands ---------- */
+  useSpeechRecognitionEvent("result", async (e) => {
+    if (!isFocused || !running.current) return;
+    const latest = e.results[0]?.transcript ?? "";
+    setTx(latest);
+
+    /* simple nav commands */
+    if (!navRef.current && /calendar/i.test(latest)) {
+      navRef.current = true;
+      ExpoSpeechRecognitionModule.stop();
+      setTx("");
+      router.replace("/calendar");
+      return;
+    }
+
+    if (!navRef.current && /\bmy\s+day\b/i.test(latest)) {
+      navRef.current = true;
+      ExpoSpeechRecognitionModule.stop();
+      setTx("");
+      router.replace("/my-day");
+      return;
+    }
+
+    if (/^(exit|close)\b/i.test(latest)) {
+      ExpoSpeechRecognitionModule.stop();
+      Alert.alert("To exit, use the Exit button on other pages.");
     }
   });
 
+  /* ---------- focus lifecycle ---------- */
   useFocusEffect(
     useCallback(() => {
       alive.current = true;
+
       (async () => {
         const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
         if (!perm.granted) {
-          Alert.alert("Permission required", "Enable microphone access.");
+          Alert.alert("Permission required", "Enable microphone");
           return;
         }
-        ExpoSpeechRecognitionModule.start({ lang: "en-US", interimResults: true, continuous: true });
+
+        /* start recogniser */
+        ExpoSpeechRecognitionModule.start({
+          lang: "en-US",
+          interimResults: true,
+          continuous: true,
+        });
       })();
-      return () => { alive.current = false; running.current = false; stopRec(); };
+
+      return () => {
+        alive.current   = false;
+        running.current = false;
+        ExpoSpeechRecognitionModule.stop();
+        stopTTS();
+      };
     }, [])
   );
 
-  const saveTask = useCallback((detail) => {
-    const due =
-      chronoParse(detail.dueDate, new Date(), { forwardDate: true })[0]?.date?.() ??
-      new Date();
-
-    const base = {
-      id: Date.now(),
-      title: detail.title || "Untitled",
-      description: detail.description,
-      dueDate: due,
-      completed: false,
-      repeat: detail.frequency ?? "none",
-    };
-
-    const repeats = buildRepeats(due, base.repeat).map((d) => ({
-      ...base,
-      id: base.id + d.getTime(),
-      dueDate: d,
-    }));
-
-    setTasks((prev) => sortByDate([...prev, base, ...repeats]));
-    setMode("list");
-  }, []);
-
-  const toggleTask = (id) =>
-    setTasks((prev) =>
-      sortByDate(
-        prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
-      )
-    );
-
-  const deleteTask = (id) =>
-    setTasks((prev) => sortByDate(prev.filter((t) => t.id !== id)));
-
-  if (mode === "add") {
-    return (
-      <AddTask
-        onSave={saveTask}
-        onCancel={() => { stopRec(); setMode("list"); }}
-      />
-    );
-  }
-
+  /* ---------- UI ---------- */
   return (
     <View style={{ flex: 1, padding: 16 }}>
-      <Text style={{ fontSize: 22, fontWeight: "600", marginBottom: 4 }}>
-        My Tasks
-      </Text>
-      <Text style={{ marginBottom: 8, fontSize: 16 }}>
-        {listen ? "🔊 Listening…" : "🤫 Mic off"}
-      </Text>
+      <ScrollView keyboardShouldPersistTaps="handled">
+        {/* ADD TASK FORM */}
+        <Text style={{ fontSize: 22, fontWeight: "600", marginBottom: 8 }}>
+          Add Task
+        </Text>
+        <View style={{ flexDirection: "row", marginBottom: 10 }}>
+          <TextInput
+            value={newTitle}
+            onChangeText={setNewTitle}
+            placeholder="Task title"
+            style={{
+              flex: 1,
+              borderWidth: 1,
+              borderColor: "#ccc",
+              borderRadius: 6,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              fontSize: 16,
+            }}
+            returnKeyType="done"
+            onSubmitEditing={addTask}
+          />
+          <TouchableOpacity
+            onPress={addTask}
+            style={{
+              marginLeft: 8,
+              backgroundColor: "#34C759",
+              borderRadius: 6,
+              paddingHorizontal: 14,
+              justifyContent: "center",
+            }}
+          >
+            <Text style={{ color: "#fff", fontWeight: "600" }}>Add</Text>
+          </TouchableOpacity>
+        </View>
 
-      <TaskList tasks={tasks} onToggle={toggleTask} onDelete={deleteTask} />
+        {/* LISTENING STATUS BOX */}
+        <View
+          style={{
+            borderWidth: 1,
+            borderColor: "#ccc",
+            borderRadius: 8,
+            padding: 12,
+            backgroundColor: "#fafafa",
+            marginBottom: 16,
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 18,
+              fontWeight: "600",
+              textAlign: "center",
+              marginBottom: 4,
+            }}
+          >
+            {recognizing
+              ? "🔊 Listening… say 'calendar' or 'my day'"
+              : "🤫 Not listening"}
+          </Text>
+          {transcript ? (
+            <Text style={{ fontSize: 16, color: "#333" }}>{transcript}</Text>
+          ) : null}
+        </View>
 
-      <TouchableOpacity
-        onPress={() => setMode("add")}
-        style={{
-          alignSelf: "flex-start",
-          padding: 12,
-          backgroundColor: "#34c759",
-          borderRadius: 8,
-          marginTop: 12,
-        }}
-      >
-        <Text style={{ color: "#fff", fontWeight: "600" }}>＋ Add Task</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        onPress={() => { stopRec(); attemptExit(); }}
-        style={{
-          alignSelf: "flex-start",
-          padding: 12,
-          backgroundColor: "#ff3b30",
-          borderRadius: 8,
-          marginTop: 8,
-        }}
-      >
-        <Text style={{ color: "#fff", fontWeight: "600" }}>Exit</Text>
-      </TouchableOpacity>
+        {/* TASK LIST */}
+        <TaskList
+          date={new Date()}
+          tasks={tasks}
+          onToggle={toggleTask}
+          onDelete={deleteTask}
+        />
+      </ScrollView>
     </View>
   );
 }
